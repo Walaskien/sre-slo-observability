@@ -1,0 +1,32 @@
+route:
+  # Default is the low-urgency receiver: an alert with no severity should not wake anyone.
+  receiver: ticket
+  group_by: [alertname, service]
+  group_wait: 10s
+  group_interval: 1m
+  repeat_interval: 4h
+  routes:
+    - matchers:
+        - severity="page"
+      receiver: page
+
+receivers:
+  # Both go to a local sink that prints what it received. No real notification channel,
+  # so no tokens in the repository. Swap the url for Slack, PagerDuty, email and so on.
+  - name: page
+    webhook_configs:
+      - url: http://alert-sink:8081/page
+        send_resolved: true
+  - name: ticket
+    webhook_configs:
+      - url: http://alert-sink:8081/ticket
+        send_resolved: true
+
+inhibit_rules:
+  # A fast burn already says the budget is going. The slow alert for the same service and SLO
+  # adds noise, not information, until the fast one clears.
+  - source_matchers:
+      - window="fast"
+    target_matchers:
+      - window="slow"
+    equal: [service, slo]
