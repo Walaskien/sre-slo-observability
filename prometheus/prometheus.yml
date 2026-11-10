@@ -1,0 +1,24 @@
+global:
+  # Short on purpose so the demo reacts in seconds. 15s to 30s is the usual choice.
+  scrape_interval: 5s
+  evaluation_interval: 15s
+
+rule_files:
+  - rules/slo.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  - job_name: demo-api
+    static_configs:
+      - targets: ["demo-api:8000"]
+        # Same label name and value as the Loki stream label. This is the join key between
+        # an alert and the logs of the service that raised it.
+        labels:
+          service: demo-api
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

@@ -1,0 +1,250 @@
+# Synthetic traffic, one sample per minute. Counters are written as start+step*xN, where the step
+# is "requests per minute". Every scenario is 1000 requests per minute so the numbers are easy to
+# check by hand; the arithmetic is in the comment above each scenario.
+rule_files:
+  - rules/slo.yml
+
+evaluation_interval: 1m
+
+tests:
+  # 3 bad per 1000 = 0.3% against a 0.5% budget: burn rate 0.6, nothing should fire.
+  - name: budget is not burning
+    interval: 1m
+    input_series:
+      - series: 'http_requests_total{service="demo-api",route="/api/orders",code="200"}'
+        values: "0+997x120"
+      - series: 'http_requests_total{service="demo-api",route="/api/orders",code="500"}'
+        values: "0+3x120"
+    promql_expr_test:
+      - expr: service:sli_errors:ratio_rate1h
+        eval_time: 2h
+        exp_samples:
+          - labels: 'service:sli_errors:ratio_rate1h{service="demo-api"}'
+            value: 0.003
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: SLOAvailabilityFastBurn
+        exp_alerts: []
+      - eval_time: 2h
+        alertname: SLOAvailabilitySlowBurn
+        exp_alerts: []
+
+  # No 5xx series exists at all. The ratio must be 0, not an empty result that makes every
+  # alert and panel built on it go quiet for the wrong reason.
+  - name: ratio is zero when no 5xx series exists
+    interval: 1m
+    input_series:
+      - series: 'http_requests_total{service="demo-api",route="/api/orders",code="200"}'
+        values: "0+1000x30"
+    promql_expr_test:
+      - expr: service:sli_errors:ratio_rate5m
+        eval_time: 20m
+        exp_samples:
+          - labels: 'service:sli_errors:ratio_rate5m{service="demo-api"}'
+            value: 0
+
+  # Six healthy hours, then 30% of requests fail (300 of 1000 per minute). m = bad minutes so far.
+  # 1h ratio = (m*300 + (60-m)*3) / 60000 passes 7.2% at m = 14, so the page comes about 14
+  # minutes in, not at once, even though the 5m window is over the line from minute 1.
+  # 6h ratio = (m*300 + (360-m)*3) / 360000 passes 3% only at m = 33, so the ticket is later.
+  # At 380 (m = 20): 6120 / 60000 = 10.2%. At 420 (m = 60): 18900 / 360000 = 5.25%.
+  - name: budget burns fast
+    interval: 1m
+    input_series:
+      - series: 'http_requests_total{service="demo-api",route="/api/orders",code="200"}'
+        values: "0+997x360 359620+700x59"
+      - series: 'http_requests_total{service="demo-api",route="/api/orders",code="500"}'
+        values: "0+3x360 1380+300x59"
+    alert_rule_test:
+      - eval_time: 370m
+        alertname: SLOAvailabilityFastBurn
+        exp_alerts: []
+      - eval_time: 380m
+        alertname: SLOAvailabilityFastBurn
+        exp_alerts:
+          - exp_labels:
+              service: demo-api
+              severity: page
+              slo: availability
+              window: fast
+            exp_annotations:
+              summary: "demo-api: availability budget burning at 14.4x or more"
+              description: "5xx ratio over 1h is 10.2%; the SLO allows 0.5%. At this rate 2% of the 30d budget is gone every hour."
+              runbook_url: "https://github.com/Walaskien/sre-slo-observability/blob/main/docs/runbook.md#sloavailabilityfastburn"
+              dashboard: "http://localhost:3000/d/slo-error-budget?var-service=demo-api"
+              logs_query: '{service="demo-api", level="error"}'
+      # Same incident, 20 minutes in: the 6h window has not caught up yet.
+      - eval_time: 380m
+        alertname: SLOAvailabilitySlowBurn
+        exp_alerts: []
+      - eval_time: 420m
+        alertname: SLOAvailabilitySlowBurn
+        exp_alerts:
+          - exp_labels:
+              service: demo-api
+              severity: ticket
+              slo: availability
+              window: slow
+            exp_annotations:
+              summary: "demo-api: availability budget burning at 6x or more"
+              description: "5xx ratio over 6h is 5.25%; the SLO allows 0.5%. At this rate 5% of the 30d budget is gone every 6 hours."
+              runbook_url: "https://github.com/Walaskien/sre-slo-observability/blob/main/docs/runbook.md#sloavailabilityslowburn"
+              dashboard: "http://localhost:3000/d/slo-error-budget?var-service=demo-api"
+              logs_query: '{service="demo-api", level="error"}'
+
+  # Total outage for 10 minutes (minutes 61 to 70), then healthy again.
+  # The 1h window stays over the threshold long after the outage ends (16.9% at 80m), but
+  # the 5m window drops back to 0.3%. Without the short window this alert would keep
+  # paging for most of an hour after the service recovered.
+  - name: page resolves after recovery
+    interval: 1m
+    input_series:
+      - series: 'http_requests_total{service="demo-api",route="/api/orders",code="200"}'
+        values: "0+997x60 59820+0x9 60817+997x20"
+      - series: 'http_requests_total{service="demo-api",route="/api/orders",code="500"}'
+        values: "0+3x60 1180+1000x9 10183+3x20"
+    promql_expr_test:
+      # Floats from rate() are not exact, so compare in basis points (16.92%).
+      - expr: round(service:sli_errors:ratio_rate1h * 10000)
+        eval_time: 80m
+        exp_samples:
+          - labels: '{service="demo-api"}'
+            value: 1692
+      - expr: service:sli_errors:ratio_rate5m
+        eval_time: 80m
+        exp_samples:
+          - labels: 'service:sli_errors:ratio_rate5m{service="demo-api"}'
+            value: 0.003
+    alert_rule_test:
+      # 3 bad minutes: 5.3% over 1h, under 7.2%. A short blip must not page.
+      - eval_time: 63m
+        alertname: SLOAvailabilityFastBurn
+        exp_alerts: []
+      - eval_time: 68m
+        alertname: SLOAvailabilityFastBurn
+        exp_alerts:
+          - exp_labels:
+              service: demo-api
+              severity: page
+              slo: availability
+              window: fast
+            exp_annotations:
+              summary: "demo-api: availability budget burning at 14.4x or more"
+              description: "5xx ratio over 1h is 13.59%; the SLO allows 0.5%. At this rate 2% of the 30d budget is gone every hour."
+              runbook_url: "https://github.com/Walaskien/sre-slo-observability/blob/main/docs/runbook.md#sloavailabilityfastburn"
+              dashboard: "http://localhost:3000/d/slo-error-budget?var-service=demo-api"
+              logs_query: '{service="demo-api", level="error"}'
+      - eval_time: 80m
+        alertname: SLOAvailabilityFastBurn
+        exp_alerts: []
+
+  # Six healthy hours at 0.3%, then 4% (40 of 1000) errors. 4% is below the fast line (7.2%),
+  # so the 1h/5m pair never fires. The 6h window needs about 263 bad minutes to pass 3%.
+  # At 11h: 12180 / 360000 = 3.383%.
+  - name: budget burns slowly
+    interval: 1m
+    input_series:
+      - series: 'http_requests_total{service="demo-api",route="/api/orders",code="200"}'
+        values: "0+997x360 359880+960x299"
+      - series: 'http_requests_total{service="demo-api",route="/api/orders",code="500"}'
+        values: "0+3x360 1120+40x299"
+    alert_rule_test:
+      - eval_time: 8h
+        alertname: SLOAvailabilitySlowBurn
+        exp_alerts: []
+      - eval_time: 10h
+        alertname: SLOAvailabilitySlowBurn
+        exp_alerts: []
+      - eval_time: 11h
+        alertname: SLOAvailabilitySlowBurn
+        exp_alerts:
+          - exp_labels:
+              service: demo-api
+              severity: ticket
+              slo: availability
+              window: slow
+            exp_annotations:
+              summary: "demo-api: availability budget burning at 6x or more"
+              description: "5xx ratio over 6h is 3.383%; the SLO allows 0.5%. At this rate 5% of the 30d budget is gone every 6 hours."
+              runbook_url: "https://github.com/Walaskien/sre-slo-observability/blob/main/docs/runbook.md#sloavailabilityslowburn"
+              dashboard: "http://localhost:3000/d/slo-error-budget?var-service=demo-api"
+              logs_query: '{service="demo-api", level="error"}'
+      - eval_time: 11h
+        alertname: SLOAvailabilityFastBurn
+        exp_alerts: []
+
+  # Six healthy hours (2% of requests over 300 ms, under the 5% budget), then every request
+  # is slow. 503s with huge latency run alongside and must not change any number below.
+  # Fast: passes 72% on the 1h window after about 43 slow minutes, so at 7h15m it is firing.
+  # Slow: the 6h window needs 103 slow minutes to pass 30%, so the ticket comes later (8h20m).
+  - name: latency budget burns
+    interval: 1m
+    input_series:
+      - series: 'http_request_duration_seconds_count{service="demo-api",route="/api/orders",code="200"}'
+        values: "0+1000x500"
+      - series: 'http_request_duration_seconds_bucket{service="demo-api",route="/api/orders",code="200",le="0.3"}'
+        values: "0+980x360 352800+0x139"
+      - series: 'http_request_duration_seconds_count{service="demo-api",route="/api/orders",code="503"}'
+        values: "0+300x500"
+      - series: 'http_request_duration_seconds_bucket{service="demo-api",route="/api/orders",code="503",le="0.3"}'
+        values: "0+0x500"
+    promql_expr_test:
+      - expr: round(service:sli_slow:ratio_rate1h * 1000)
+        eval_time: 5h
+        exp_samples:
+          - labels: '{service="demo-api"}'
+            value: 20
+    alert_rule_test:
+      - eval_time: 7h15m
+        alertname: SLOLatencyFastBurn
+        exp_alerts:
+          - exp_labels:
+              service: demo-api
+              severity: page
+              slo: latency
+              window: fast
+            exp_annotations:
+              summary: "demo-api: latency budget burning at 14.4x or more"
+              description: "100% of successful requests over 1h took longer than 300 ms; the SLO allows 5%."
+              runbook_url: "https://github.com/Walaskien/sre-slo-observability/blob/main/docs/runbook.md#slolatencyfastburn"
+              dashboard: "http://localhost:3000/d/slo-error-budget?var-service=demo-api"
+              logs_query: '{service="demo-api"} | json | duration_ms > 300'
+      - eval_time: 7h15m
+        alertname: SLOLatencySlowBurn
+        exp_alerts: []
+      - eval_time: 8h20m
+        alertname: SLOLatencySlowBurn
+        exp_alerts:
+          - exp_labels:
+              service: demo-api
+              severity: ticket
+              slo: latency
+              window: slow
+            exp_annotations:
+              summary: "demo-api: latency budget burning at 6x or more"
+              description: "40.11% of successful requests over 6h took longer than 300 ms; the SLO allows 5%."
+              runbook_url: "https://github.com/Walaskien/sre-slo-observability/blob/main/docs/runbook.md#slolatencyslowburn"
+              dashboard: "http://localhost:3000/d/slo-error-budget?var-service=demo-api"
+              logs_query: '{service="demo-api"} | json | duration_ms > 300'
+
+  - name: scrape target disappears
+    interval: 1m
+    input_series:
+      - series: 'up{job="demo-api",service="demo-api",instance="demo-api:8000"}'
+        values: "1+0x10 0+0x10"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels:
+              job: demo-api
+              service: demo-api
+              instance: demo-api:8000
+              severity: page
+            exp_annotations:
+              summary: "demo-api cannot be scraped"
+              description: "Prometheus has failed to scrape demo-api:8000 for 1 minute. No traffic means no burn rate, so nothing else will alert."
+              runbook_url: "https://github.com/Walaskien/sre-slo-observability/blob/main/docs/runbook.md#servicedown"

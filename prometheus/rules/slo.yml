@@ -1,0 +1,205 @@
+# SLIs as recording rules, and the burn-rate alerts built on them.
+#
+# Recording rules and the alerts that read them share one group on purpose. Rules in a group run
+# in order at the same timestamp, so an alert never reads a window that is one evaluation old.
+# In separate groups that lag is small in practice, but it makes unit tests flaky.
+#
+# SLI definitions
+#   Availability: a bad event is a 5xx. 4xx are the caller's mistakes and count as good.
+#   Latency: share of successful requests slower than 300 ms, read from the le="0.3" bucket.
+#   5xx are left out of the latency ratio on purpose, otherwise one failure would be charged
+#   to both SLOs.
+#
+# Alerts: multiwindow, multi-burn-rate, after chapter 5 of the Google SRE Workbook.
+#   burn rate = observed bad ratio / allowed bad ratio. The allowed ratio is the error budget:
+#   0.005 for availability (99.5%), 0.05 for latency (95% under 300 ms).
+#   An alert fires only when a long window AND a short window are both over the threshold.
+#   The long window says the burn is big enough to matter; the short one says it is still
+#   happening, so the alert resolves soon after the problem does.
+#
+#     fast: 14.4x over 1h and 5m   (2% of a 30d budget per hour)   -> page
+#     slow:  6x   over 6h and 30m  (5% of a 30d budget per 6h)     -> ticket
+#
+#   The workbook pages on the 6x alert too. Here it is a ticket because nobody carries a pager
+#   for this stack; change `severity` to get the original behaviour.
+groups:
+  - name: sli_and_burn_rate
+    rules:
+      - record: service:http_requests:rate5m
+        expr: sum by (service) (rate(http_requests_total[5m]))
+
+      - record: service:sli_errors:ratio_rate5m
+        # The `or 0 *` branch keeps the ratio at 0, not empty, until the first 5xx appears.
+        expr: |
+          (
+            sum by (service) (rate(http_requests_total{code=~"5.."}[5m]))
+            or
+            0 * sum by (service) (rate(http_requests_total[5m]))
+          )
+          /
+          sum by (service) (rate(http_requests_total[5m]))
+
+      - record: service:sli_errors:ratio_rate30m
+        expr: |
+          (
+            sum by (service) (rate(http_requests_total{code=~"5.."}[30m]))
+            or
+            0 * sum by (service) (rate(http_requests_total[30m]))
+          )
+          /
+          sum by (service) (rate(http_requests_total[30m]))
+
+      - record: service:sli_errors:ratio_rate1h
+        expr: |
+          (
+            sum by (service) (rate(http_requests_total{code=~"5.."}[1h]))
+            or
+            0 * sum by (service) (rate(http_requests_total[1h]))
+          )
+          /
+          sum by (service) (rate(http_requests_total[1h]))
+
+      - record: service:sli_errors:ratio_rate6h
+        expr: |
+          (
+            sum by (service) (rate(http_requests_total{code=~"5.."}[6h]))
+            or
+            0 * sum by (service) (rate(http_requests_total[6h]))
+          )
+          /
+          sum by (service) (rate(http_requests_total[6h]))
+
+      - record: service:sli_slow:ratio_rate5m
+        expr: |
+          1 - (
+            sum by (service) (rate(http_request_duration_seconds_bucket{le="0.3",code!~"5.."}[5m]))
+            /
+            sum by (service) (rate(http_request_duration_seconds_count{code!~"5.."}[5m]))
+          )
+
+      - record: service:sli_slow:ratio_rate30m
+        expr: |
+          1 - (
+            sum by (service) (rate(http_request_duration_seconds_bucket{le="0.3",code!~"5.."}[30m]))
+            /
+            sum by (service) (rate(http_request_duration_seconds_count{code!~"5.."}[30m]))
+          )
+
+      - record: service:sli_slow:ratio_rate1h
+        expr: |
+          1 - (
+            sum by (service) (rate(http_request_duration_seconds_bucket{le="0.3",code!~"5.."}[1h]))
+            /
+            sum by (service) (rate(http_request_duration_seconds_count{code!~"5.."}[1h]))
+          )
+
+      - record: service:sli_slow:ratio_rate6h
+        expr: |
+          1 - (
+            sum by (service) (rate(http_request_duration_seconds_bucket{le="0.3",code!~"5.."}[6h]))
+            /
+            sum by (service) (rate(http_request_duration_seconds_count{code!~"5.."}[6h]))
+          )
+
+      - alert: SLOAvailabilityFastBurn
+        expr: |
+          service:sli_errors:ratio_rate1h > (14.4 * 0.005)
+          and
+          service:sli_errors:ratio_rate5m > (14.4 * 0.005)
+        for: 1m
+        labels:
+          severity: page
+          slo: availability
+          window: fast
+        annotations:
+          summary: "{{ $labels.service }}: availability budget burning at 14.4x or more"
+          description: "5xx ratio over 1h is {{ $value | humanizePercentage }}; the SLO allows 0.5%. At this rate 2% of the 30d budget is gone every hour."
+          runbook_url: "https://github.com/Walaskien/sre-slo-observability/blob/main/docs/runbook.md#sloavailabilityfastburn"
+          dashboard: "http://localhost:3000/d/slo-error-budget?var-service={{ $labels.service }}"
+          logs_query: '{service="{{ $labels.service }}", level="error"}'
+
+      - alert: SLOAvailabilitySlowBurn
+        expr: |
+          service:sli_errors:ratio_rate6h > (6 * 0.005)
+          and
+          service:sli_errors:ratio_rate30m > (6 * 0.005)
+        for: 5m
+        labels:
+          severity: ticket
+          slo: availability
+          window: slow
+        annotations:
+          summary: "{{ $labels.service }}: availability budget burning at 6x or more"
+          description: "5xx ratio over 6h is {{ $value | humanizePercentage }}; the SLO allows 0.5%. At this rate 5% of the 30d budget is gone every 6 hours."
+          runbook_url: "https://github.com/Walaskien/sre-slo-observability/blob/main/docs/runbook.md#sloavailabilityslowburn"
+          dashboard: "http://localhost:3000/d/slo-error-budget?var-service={{ $labels.service }}"
+          logs_query: '{service="{{ $labels.service }}", level="error"}'
+
+      - alert: SLOLatencyFastBurn
+        expr: |
+          service:sli_slow:ratio_rate1h > (14.4 * 0.05)
+          and
+          service:sli_slow:ratio_rate5m > (14.4 * 0.05)
+        for: 1m
+        labels:
+          severity: page
+          slo: latency
+          window: fast
+        annotations:
+          summary: "{{ $labels.service }}: latency budget burning at 14.4x or more"
+          description: "{{ $value | humanizePercentage }} of successful requests over 1h took longer than 300 ms; the SLO allows 5%."
+          runbook_url: "https://github.com/Walaskien/sre-slo-observability/blob/main/docs/runbook.md#slolatencyfastburn"
+          dashboard: "http://localhost:3000/d/slo-error-budget?var-service={{ $labels.service }}"
+          logs_query: '{service="{{ $labels.service }}"} | json | duration_ms > 300'
+
+      - alert: SLOLatencySlowBurn
+        expr: |
+          service:sli_slow:ratio_rate6h > (6 * 0.05)
+          and
+          service:sli_slow:ratio_rate30m > (6 * 0.05)
+        for: 5m
+        labels:
+          severity: ticket
+          slo: latency
+          window: slow
+        annotations:
+          summary: "{{ $labels.service }}: latency budget burning at 6x or more"
+          description: "{{ $value | humanizePercentage }} of successful requests over 6h took longer than 300 ms; the SLO allows 5%."
+          runbook_url: "https://github.com/Walaskien/sre-slo-observability/blob/main/docs/runbook.md#slolatencyslowburn"
+          dashboard: "http://localhost:3000/d/slo-error-budget?var-service={{ $labels.service }}"
+          logs_query: '{service="{{ $labels.service }}"} | json | duration_ms > 300'
+
+  # The SLO window itself. Evaluated less often because a 30d range is the expensive query.
+  - name: sli_budget_window
+    interval: 1m
+    rules:
+      - record: service:sli_errors:ratio_rate30d
+        expr: |
+          (
+            sum by (service) (rate(http_requests_total{code=~"5.."}[30d]))
+            or
+            0 * sum by (service) (rate(http_requests_total[30d]))
+          )
+          /
+          sum by (service) (rate(http_requests_total[30d]))
+      - record: service:sli_slow:ratio_rate30d
+        expr: |
+          1 - (
+            sum by (service) (rate(http_request_duration_seconds_bucket{le="0.3",code!~"5.."}[30d]))
+            /
+            sum by (service) (rate(http_request_duration_seconds_count{code!~"5.."}[30d]))
+          )
+
+  # Burn-rate alerts are silent when there is no traffic at all (0/0 is empty, not an error),
+  # so a dead service needs its own alert.
+  - name: liveness
+    rules:
+      - alert: ServiceDown
+        expr: up{job="demo-api"} == 0
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $labels.service }} cannot be scraped"
+          description: "Prometheus has failed to scrape {{ $labels.instance }} for 1 minute. No traffic means no burn rate, so nothing else will alert."
+          runbook_url: "https://github.com/Walaskien/sre-slo-observability/blob/main/docs/runbook.md#servicedown"
