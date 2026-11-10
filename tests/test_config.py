@@ -62,3 +62,16 @@ def test_every_burn_alert_pairs_a_long_and_a_short_window():
         if rule.get("alert", "").startswith("SLO"):
             windows = re.findall(r"ratio_rate(\w+)", rule["expr"])
             assert len(windows) == 2 and windows[0] != windows[1]
+
+
+def test_every_alert_links_to_a_runbook_section_that_exists():
+    headings = {
+        line[3:].strip().lower()
+        for line in (ROOT / "docs" / "runbook.md").read_text().splitlines()
+        if line.startswith("## ")
+    }
+    for rule in all_rules():
+        if "alert" in rule:
+            anchor = rule["annotations"]["runbook_url"].rsplit("#", 1)[1]
+            assert anchor in headings, rule["alert"]
+            assert anchor == rule["alert"].lower()
