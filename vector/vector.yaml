@@ -1,0 +1,38 @@
+data_dir: /var/lib/vector
+
+sources:
+  app_files:
+    type: file
+    include:
+      - /var/log/demo/*.log
+
+transforms:
+  shape:
+    type: remap
+    inputs: [app_files]
+    source: |
+      # Keep the original JSON line as the Loki log line. Only `level` is lifted out, because it
+      # is the one field with a handful of values that is worth having as a label.
+      parsed, err = parse_json(.message)
+      .level = "unknown"
+      if err == null && is_object(parsed) {
+        .level = string(parsed.level) ?? "unknown"
+        # Use the time the service logged, not the time this shipper read the line.
+        ts, ts_err = parse_timestamp(string(parsed.ts) ?? "", "%Y-%m-%dT%H:%M:%S%.3fZ")
+        if ts_err == null {
+          .timestamp = ts
+        }
+      }
+
+sinks:
+  loki:
+    type: loki
+    inputs: [shape]
+    endpoint: http://loki:3100
+    encoding:
+      codec: text
+    labels:
+      # Same name and value as the `service` label Prometheus puts on the metrics, so an alert
+      # and the logs of the service behind it can be joined on one label.
+      service: demo-api
+      level: "{{ level }}"

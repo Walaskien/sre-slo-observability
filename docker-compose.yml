@@ -1,0 +1,73 @@
+# Host ports are bound to localhost and can be moved with env vars, e.g. GRAFANA_PORT=13001.
+services:
+  demo-api:
+    build: ./app
+    image: sre-slo-demo:local
+    environment:
+      # The delay and fail query parameters exist for the drills. Off by default in the app.
+      FAULTS_ENABLED: "1"
+      LOG_FILE: /var/log/demo/app.log
+    volumes:
+      - app-logs:/var/log/demo
+    ports: ["127.0.0.1:${APP_PORT:-8000}:8000"]
+
+  loadgen:
+    build: ./app
+    image: sre-slo-demo:local
+    profiles: ["tools"]
+    entrypoint: ["python", "loadgen.py"]
+    command: ["--url", "http://demo-api:8000", "--rps", "20", "--duration", "60"]
+
+  alert-sink:
+    build: ./app
+    image: sre-slo-demo:local
+    command: ["python", "sink.py"]
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    # Retention is raised from the 15d default so the 30d SLO window can be computed.
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=30d
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro
+    ports: ["127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"]
+    depends_on: [demo-api, alertmanager]
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    ports: ["127.0.0.1:${ALERTMANAGER_PORT:-9093}:9093"]
+    depends_on: [alert-sink]
+
+  loki:
+    image: grafana/loki:3.3.2
+    command: ["-config.file=/etc/loki/loki.yml"]
+    volumes:
+      - ./loki/loki.yml:/etc/loki/loki.yml:ro
+    ports: ["127.0.0.1:${LOKI_PORT:-3100}:3100"]
+
+  vector:
+    image: timberio/vector:0.43.1-alpine
+    command: ["--config", "/etc/vector/vector.yaml"]
+    volumes:
+      - ./vector/vector.yaml:/etc/vector/vector.yaml:ro
+      - app-logs:/var/log/demo:ro
+    depends_on: [loki, demo-api]
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_SECURITY_ADMIN_PASSWORD: admin   # demo stack only: change before exposing
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["127.0.0.1:${GRAFANA_PORT:-3000}:3000"]
+    depends_on: [prometheus, loki]
+
+volumes:
+  app-logs:
