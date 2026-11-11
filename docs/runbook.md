@@ -15,12 +15,14 @@ per minute can be one unlucky request, and at zero traffic these alerts say noth
 **Check**
 1. Which route and which code? `sum by (route, code) (rate(http_requests_total{service="demo-api", code=~"5.."}[5m]))`
 2. What do the errors say? The alert carries `logs_query`; paste it into Explore (Loki) or use the logs panel
-   on the dashboard: `{service="demo-api", level="error"}`. Count by message:
-   `sum by (msg) (count_over_time({service="demo-api", level="error"} [5m]))`
-   (add `| json` if you want to group by a field inside the line).
+   on the dashboard: `{service="demo-api", level="error"}`. Count by message and route (`msg` and `route`
+   live inside the JSON line, hence `| json`):
+   `sum by (msg, route) (count_over_time({service="demo-api", level="error"} | json [5m]))`
 3. One route or all of them? If `/api/search` is fine and `/api/orders` is not, look at what only orders uses (the DB pool).
 4. Pool: `db_pool_in_use` against `db_pool_size`, `rate(db_pool_acquire_timeouts_total[5m])`. In the logs, `db_wait_ms`
-   is time spent waiting for a connection and `db_ms` is time holding one.
+   is time spent waiting for a connection and `db_ms` is time holding one. How long are connections held right now?
+   `avg_over_time({service="demo-api", level="info"} | json | route="/api/orders" | unwrap db_ms [2m]) by (route)`
+   (without the trailing `by (route)` Loki returns one series per log line and refuses the query).
 5. What changed: a deploy, a config change, a jump in traffic (`service:http_requests:rate5m`)?
 
 **Do**
