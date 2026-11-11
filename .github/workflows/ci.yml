@@ -1,0 +1,32 @@
+name: ci
+on: [push, pull_request]
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check .
+      - run: pytest -q
+
+  rules:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: promtool check and unit tests, amtool, routing, compose config
+        run: make check
+
+  smoke:
+    runs-on: ubuntu-latest
+    needs: [python, rules]
+    steps:
+      - uses: actions/checkout@v4
+      - name: stack up, traffic with errors, SLI and logs show up, stack down
+        run: make smoke
