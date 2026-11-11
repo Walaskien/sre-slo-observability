@@ -85,7 +85,7 @@ injected by me, which the write-up says up front.
 
 ## Verified
 
-Run on macOS with Colima (Docker 29), Python 3.9.6, 2026-11-10 and 2026-11-11.
+Run locally on macOS with Colima (Docker 29), Python 3.9.6, 2026-11-10 and 2026-11-11, and then on GitHub Actions.
 
 | Check | Result |
 |---|---|
@@ -96,16 +96,15 @@ Run on macOS with Colima (Docker 29), Python 3.9.6, 2026-11-10 and 2026-11-11.
 | The tests catch breakage | three broken copies of the rules (no short window on the fast alert, no `or 0 *` fallback, 5xx counted in the latency ratio) each failed `promtool test rules` |
 | `amtool check-config`, `amtool config routes test` | valid; `severity=page` goes to `page`, `severity=ticket` and no severity to `ticket` |
 | `actionlint` on the workflow, `shellcheck` on `scripts/smoke.sh` | clean |
-| `docker-compose config -q` | valid (Compose v1.29 in a venv; CI uses `docker compose`) |
+| `docker-compose config -q` | valid locally (Compose v1.29 in a venv); CI ran `docker compose config -q` (v2) as part of `make check` |
 | `scripts/smoke.sh`, whole stack, ports moved | passed: all four services ready, dashboard provisioned, 600 requests with 20% failing (120 5xx), `service:sli_errors:ratio_rate5m` above zero, error lines found in Loki under `service="demo-api"`, stack removed |
 | The drill, live | fast burn pending 04:39:04, firing 04:40:04, page at the sink 04:40:17; slow availability alert fired and was held back by the inhibit rule until the page resolved; 21600 requests sent, 10018 answered 503, all on `/api/orders` |
 | Alert to logs by label | `logs_query` copied from the alert returned the error lines from Loki |
 | Dashboard | provisioned from JSON (found through the Grafana API), rendered in headless Chrome, screenshot above |
+| GitHub Actions, [run 42963667544](https://github.com/Walaskien/sre-slo-observability/actions/runs/42963667544), commit `d5c2c33`, `ubuntu-24.04`, first run, no fixes needed | all four jobs green in 1 min 40 s: `python (3.9)` (3.9.25) and `python (3.12)` each ruff clean and 28 passed; `rules` (`make check`: promtool, amtool, routing, `docker compose config -q`); `smoke` (`make smoke`, whole stack on default ports, about 80 s). Only annotations: the Node 20 deprecation notice for `checkout@v4` and `setup-python@v5` |
 
 Not verified:
 
-- GitHub Actions has not run yet: every command in the workflow was run locally, except that
-  `docker compose` (v2) was replaced by `docker-compose` (v1.29) and `pytest` ran on 3.9 only.
 - How long recovery takes in real time. The recovery half of the live run is not clean (load was
   restarted five minutes late), so only the unit test speaks for resolve behaviour.
 - The time to page with a full clean hour of history. The formula in [docs/slo.md](docs/slo.md)
