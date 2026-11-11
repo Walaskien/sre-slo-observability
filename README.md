@@ -15,9 +15,8 @@ a rate when the thing that matters is how fast the error budget is being spent.
 This repo does it the way chapter 5 of the Google SRE Workbook describes: define the SLI, set an SLO,
 and alert on burn rate with two windows that both have to be over the line. The long window says the
 damage is real; the short one says it is still going on, so the page clears soon after the problem
-does. Then it goes one step further than the book usually does on paper: there is a service to break,
-an alert that fires, a link from the alert to the logs of the service behind it, a runbook, and a
-postmortem of a drill that was run on the stack.
+does. On top of the rules there is a service to break, an alert that fires, a link from the alert to the
+logs of the service behind it, a runbook, and a postmortem of a drill that was run on the stack.
 
 ## How it fits together
 
@@ -101,7 +100,7 @@ Run locally on macOS with Colima (Docker 29), Python 3.9.6, 2026-11-10 and 2026-
 | The drill, live | fast burn pending 04:39:04, firing 04:40:04, page at the sink 04:40:17; slow availability alert fired and was held back by the inhibit rule until the page resolved; 21600 requests sent, 10018 answered 503, all on `/api/orders` |
 | Alert to logs by label | `logs_query` copied from the alert returned the error lines from Loki |
 | Dashboard | provisioned from JSON (found through the Grafana API), rendered in headless Chrome, screenshot above |
-| GitHub Actions, [run 42963667544](https://github.com/Walaskien/sre-slo-observability/actions/runs/42963667544), commit `d5c2c33`, `ubuntu-24.04`, first run, no fixes needed | all four jobs green in 1 min 40 s: `python (3.9)` (3.9.25) and `python (3.12)` each ruff clean and 28 passed; `rules` (`make check`: promtool, amtool, routing, `docker compose config -q`); `smoke` (`make smoke`, whole stack on default ports, about 80 s). Only annotations: the Node 20 deprecation notice for `checkout@v4` and `setup-python@v5` |
+| GitHub Actions (see the badge) | four jobs: `python` on 3.9 and 3.12 (ruff, 28 tests), `rules` (`make check`: promtool, amtool, routing, `docker compose config -q`) and `smoke` (`make smoke`, whole stack, about 80 s). First run needed no fixes; the actions were bumped to Node 24 versions afterwards and the run stayed green |
 
 Not verified:
 
