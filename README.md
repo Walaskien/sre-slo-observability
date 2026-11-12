@@ -148,7 +148,7 @@ scripts/smoke.sh        end-to-end check used by `make smoke` and CI
 tests/                  pytest
 ```
 
-`make check` runs the promtool and amtool checks, `make test` pytest, `make lint` ruff, `make smoke`
+`make check` runs the promtool and amtool checks, `make test` pytest, `make lint` ruff and shellcheck, `make smoke`
 the whole stack. CI runs the same.
 
 ## Related

@@ -3,6 +3,7 @@ AM_IMAGE   ?= prom/alertmanager:v0.27.0
 PROMTOOL    = docker run --rm -v $(CURDIR)/prometheus:/p:ro --entrypoint promtool $(PROM_IMAGE)
 AMTOOL      = docker run --rm -v $(CURDIR)/alertmanager:/a:ro --entrypoint amtool $(AM_IMAGE)
 COMPOSE    ?= docker compose
+SHELLCHECK ?= docker run --rm -v $(CURDIR):/mnt koalaman/shellcheck:v0.10.0
 LOADGEN     = $(COMPOSE) run --rm loadgen
 PROMETHEUS_PORT   ?= 9090
 ALERTMANAGER_PORT ?= 9093
@@ -22,6 +23,7 @@ test:
 
 lint:
 	ruff check .
+	$(SHELLCHECK) -x scripts/smoke.sh
 
 check:
 	$(PROMTOOL) check config /p/prometheus.yml

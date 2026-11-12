@@ -16,6 +16,12 @@ jobs:
       - run: ruff check .
       - run: pytest -q
 
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: shellcheck -x scripts/smoke.sh
+
   rules:
     runs-on: ubuntu-latest
     steps:
